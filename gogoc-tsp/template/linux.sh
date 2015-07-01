@@ -9,7 +9,7 @@
 # Note: IPV6 support and tun Support must be enabled before calling this script.
 # 
 
-# Changed here for Debian systems - used for radvd config file only
+# TSP_HOME_DIR used for radvd config and pid file only
 TSP_HOME_DIR=/var/run/gogoc
 
 LANGUAGE=C
@@ -86,29 +86,28 @@ ExecNoCheck()
 Display 1 "--- Start of configuration script. ---"
 Display 1 "Script: " `basename $0`
 
-ifconfig=/sbin/ifconfig
-route=/sbin/route
-ipconfig=/sbin/ip
+route=/usr/bin/route
+ipconfig=/usr/bin/ip
 rtadvd=/usr/sbin/radvd
-rtadvd_pid=/var/run/radvd/radvd.pid
-sysctl=/sbin/sysctl
+rtadvd_pid=/var/run/gogoc/gogoc-rtadvd.pid
+sysctl=/usr/bin/sysctl
 rtadvdconfigfilename=gogoc-rtadvd.conf
 rtadvdconfigfile=$TSP_HOME_DIR/$rtadvdconfigfilename
 resolv_conf=/etc/resolv.conf
 
 if [ -z $TSP_HOME_DIR ]; then
-   echo "TSP_HOME_DIR variable not specified!;"
+   echo "TSP_HOME_DIR variable not specified!"
    exit 1
 fi
 
 if [ ! -d $TSP_HOME_DIR ]; then
-   echo "Error : directory $TSP_HOME_DIR does not exist"
-   exit 1
+   echo "Directory $TSP_HOME_DIR does not exist, creating"
+   mkdir $TSP_HOME_DIR
 fi
 #
 
 if [ -z $TSP_HOST_TYPE ]; then
-   echo Error: TSP_HOST_TYPE not defined.
+   echo "Error: TSP_HOST_TYPE not defined"
    exit 1
 fi
 
@@ -125,8 +124,8 @@ if [ X"${TSP_OPERATION}" = X"TSP_TUNNEL_TEARDOWN" ]; then
 
   #
   # DNS
-  Display 1 "Removing DNS server"
-  Display 1 "NOTE: Adjust template script to perform actions"
+  #Display 1 "Removing DNS server"
+  #Display 1 "NOTE: Adjust template script to perform actions"
   # ExecNoCheck rm ${resolv_conf}
   # if [ -f ${resolv_conf}.bak ]; then
   #   ExecNoCheck cp ${resolv_conf}.bak ${resolv_conf}
@@ -144,35 +143,35 @@ if [ X"${TSP_OPERATION}" = X"TSP_TUNNEL_TEARDOWN" ]; then
 
     # Remove Blackhole.
     if [ X"${TSP_PREFIXLEN}" != X"64" ]; then
-      ExecNoCheck $route -A inet6 del $TSP_PREFIX::/$TSP_PREFIXLEN dev lo
+        ExecNoCheck $ipconfig -6 addr delete $TSP_PREFIX::/$TSP_PREFIXLEN dev lo
     fi
 
     # Remove address from TSP HOME INTERFACE
-    ExecNoCheck $ifconfig $TSP_HOME_INTERFACE inet6 del $TSP_PREFIX::1/64
+    ExecNoCheck $ipconfig -6 addr del $TSP_PREFIX::1/64 dev $TSP_HOME_INTERFACE
   fi
 
   # Delete default IPv6 route(s).
+  # TODO: What the fuck do these do?
   ExecNoCheck $route -A inet6 del ::/0     2>/dev/null  # delete default route
   ExecNoCheck $route -A inet6 del 2000::/3 2>/dev/null  # delete gw route
 
   # Destroy tunnel interface
   if [ -x $ipconfig ]; then
     # Delete tunnel via ipconfig
-    ExecNoCheck $ipconfig tunnel del $TSP_TUNNEL_INTERFACE
+    ExecNoCheck $ipconfig link del $TSP_TUNNEL_INTERFACE
   else  
     # Check if interface exists and remove it
-    $ifconfig $TSP_TUNNEL_INTERFACE >/dev/null 2>/dev/null
+    $ipconfig link show $TSP_TUNNEL_INTERFACE >/dev/null 2>/dev/null
     if [ $? -eq 0 ]; then
-
-      Delete interface IPv6 configuration.
+      #Delete interface IPv6 configuration.
       PREF=`echo $TSP_CLIENT_ADDRESS_IPV6 | sed "s/:0*/:/g" |cut -d : -f1-2`
-      OLDADDR=`$ifconfig $TSP_TUNNEL_INTERFACE | grep "inet6.* $PREF" | sed -e "s/^.*inet6 //" -e "s/  prefixlen /\//" -e "s/  scope.*\$//"`
+      OLDADDR=`$ipconfig -6 addr show $TSP_TUNNEL_INTERFACE | grep "inet6 $PREF" | awk '{print $2}'`
       if [ ! -z $OLDADDR ]; then
-        ExecNoCheck $ifconfig $TSP_TUNNEL_INTERFACE inet6 del $OLDADDR
+        ExecNoCheck $ipconfig -6 addr del $OLDADDR dev $TSP_TUNNEL_INTERFACE
       fi
 
       # Bring interface down
-      ExecNoCheck $ifconfig $TSP_TUNNEL_INTERFACE down
+      ExecNoCheck $ipconfig link set dev $TSP_TUNNEL_INTERFACE down
     fi
   fi
   
@@ -192,28 +191,25 @@ if [ X"${TSP_HOST_TYPE}" = X"host" ] || [ X"${TSP_HOST_TYPE}" = X"router" ]; the
    Display 1 "$TSP_TUNNEL_INTERFACE setup"
    if [ X"${TSP_TUNNEL_MODE}" = X"v6v4" ]; then
       Display 1 "Setting up link to $TSP_SERVER_ADDRESS_IPV4"
-      if [ -x $ipconfig ]; then
-	 ExecNoCheck $ipconfig tunnel del $TSP_TUNNEL_INTERFACE
-	 ExecNoCheck sleep 1
-         Exec $ipconfig tunnel add $TSP_TUNNEL_INTERFACE mode sit ttl 64 remote $TSP_SERVER_ADDRESS_IPV4
-      else
-         Exec $ifconfig $TSP_TUNNEL_INTERFACE tunnel ::$TSP_SERVER_ADDRESS_IPV4
+      $ipconfig link show $TSP_TUNNEL_INTERFACE >/dev/null 2>/dev/null
+      if [ $? -eq 0 ]; then
+          ExecNoCheck $ipconfig link del $TSP_TUNNEL_INTERFACE 
       fi
+      Exec $ipconfig tunnel add $TSP_TUNNEL_INTERFACE mode sit ttl 64 remote $TSP_SERVER_ADDRESS_IPV4 
    fi
-
-   Exec $ifconfig $TSP_TUNNEL_INTERFACE up
+   Exec $ipconfig link set dev $TSP_TUNNEL_INTERFACE up
 
    # Clean-up old interface IPv6 configuration.
    PREF=`echo $TSP_CLIENT_ADDRESS_IPV6 | sed "s/:0*/:/g" |cut -d : -f1-2`
-   OLDADDR=`$ifconfig $TSP_TUNNEL_INTERFACE | grep "inet6.* $PREF" | sed -e "s/^.*inet6 //" -e "s/  prefixlen /\//" -e "s/  scope.*\$//"`
+   OLDADDR=`$ipconfig -6 addr show $TSP_TUNNEL_INTERFACE | grep "inet6 $PREF" | awk '{print $2}'` 
    if [ ! -z $OLDADDR ]; then
       Display 1 "Removing old IPv6 address $OLDADDR"
-      Exec $ifconfig $TSP_TUNNEL_INTERFACE inet6 del $OLDADDR
+      Exec $ipconfig -6 addr dev $TSP_TUNNEL_INTERFACE del $OLDADDR
    fi
 
    Display 1 "This host is: $TSP_CLIENT_ADDRESS_IPV6/$TSP_TUNNEL_PREFIXLEN"
-   Exec $ifconfig $TSP_TUNNEL_INTERFACE add $TSP_CLIENT_ADDRESS_IPV6/$TSP_TUNNEL_PREFIXLEN
-   Exec $ifconfig $TSP_TUNNEL_INTERFACE mtu 1280
+   Exec $ipconfig -6 addr add $TSP_CLIENT_ADDRESS_IPV6/$TSP_TUNNEL_PREFIXLEN dev $TSP_TUNNEL_INTERFACE
+   Exec $ipconfig link set dev $TSP_TUNNEL_INTERFACE mtu 1280
 
    # 
    # Default route  
@@ -224,13 +220,13 @@ if [ X"${TSP_HOST_TYPE}" = X"host" ] || [ X"${TSP_HOST_TYPE}" = X"router" ]; the
    Exec $route -A inet6 add 2000::/3 dev $TSP_TUNNEL_INTERFACE
    #
    # DNS
-   if [ X"${TSP_CLIENT_DNS_ADDRESS_IPV6}" != X"" ]; then
-     Display 1 "Adding DNS server"
-     Display 1 "NOTE: Adjust template script to perform actions"
+   #if [ X"${TSP_CLIENT_DNS_ADDRESS_IPV6}" != X"" ]; then
+     #Display 1 "Adding DNS server"
+     #Display 1 "NOTE: Adjust template script to perform actions"
      # ExecNoCheck cp ${resolv_conf} ${resolv_conf}.bak
      # echo "echo \"nameserver ${TSP_CLIENT_DNS_ADDRESS_IPV6}\" | cat - ${resolv_conf}.bak >${resolv_conf}"
      # echo "nameserver ${TSP_CLIENT_DNS_ADDRESS_IPV6}" | cat - ${resolv_conf}.bak >${resolv_conf}
-   fi
+   #fi
 fi
 
 # Router configuration if required
@@ -248,13 +244,15 @@ if [ X"${TSP_HOST_TYPE}" = X"router" ]; then
    fi
 
    # Add prefix::1 on advertising interface. Clean up before.
-   OLDADDR=`$ifconfig $TSP_HOME_INTERFACE | grep "inet6.* $PREF" | sed -e "s/^.*inet6 //" -e "s/  prefixlen /\//" -e "s/  scope.*\$//"`
+   PREF=`echo $TSP_CLIENT_ADDRESS_IPV6 | sed "s/:0*/:/g" |cut -d : -f1-2` 
+   OLDADDR=`$ip -6 addr show $TSP_HOME_INTERFACE | grep "inet6 $PREF" | awk '{print $2}'` 
+
    if [ ! -z $OLDADDR ]; then
       Display 1 "Removing old IPv6 address $OLDADDR"
-      Exec $ifconfig $TSP_HOME_INTERFACE inet6 del $OLDADDR
+      Exec $ipconfig -6 addr del $OLDADDR dev $TSP_HOME_INTERFACE
    fi
    Display 1 "Adding prefix to $TSP_HOME_INTERFACE"
-   Exec $ifconfig $TSP_HOME_INTERFACE add $TSP_PREFIX::1/64
+   Exec $ipconfig -6 addr add $TSP_PREFIX::1/64 dev $TSP_HOME_INTERFACE
 
 
    # Stop radvd daemon if it was running.
